@@ -1,0 +1,75 @@
+name: clipes
+# EXA Mídia — câmeras públicas do Portal da Cidade viram clipes leves (720x480, 20 qps) para as TV boxes.
+# Este repositório é PÚBLICO e não guarda nenhum segredo: cada envio leva um token OIDC assinado pelo GitHub,
+# conferido pela função camera-clipes-subir da EXA, que só aceita este workflow no ramo main.
+# A chave abaixo é a chave pública do site (anon), a mesma que qualquer navegador recebe.
+on:
+  workflow_dispatch:
+    inputs:
+      minutos: { description: "quanto tempo fica rodando (máx. 345)", required: false, default: "330" }
+  schedule:
+    - cron: "7 */5 * * *"
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: clipes-${{ github.run_id }}
+jobs:
+  clipes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      SURL: https://aakenoljsycyrcrchgxj.supabase.co
+      ANON: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFha2Vub2xqc3ljeXJjcmNoZ3hqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY5MDM3NTUsImV4cCI6MjA2MjQ3OTc1NX0.wEKVfJKfQiybyne0yn0dOUwbujb_WXkZHAzlyfHb0lk
+      MINUTOS: ${{ inputs.minutos || '330' }}
+    steps:
+      - name: ffmpeg
+        # build estático (o apt dos runners às vezes leva mais de 10 min)
+        run: |
+          curl -sSL --retry 3 -o /tmp/ff.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          mkdir -p /tmp/ff && tar -xJf /tmp/ff.tar.xz -C /tmp/ff --strip-components=1
+          echo "/tmp/ff/bin" >> "$GITHUB_PATH"
+          /tmp/ff/bin/ffmpeg -version | head -1
+      - name: gerar clipes
+        run: |
+          set +e
+          CAMS="fozpontedaamizadesentidoparaguai fozpontedaamizadesentidobrasil fozsentidopontedaamizade01 fozaduanapontedaamizade fozpontetancredoneves fozpontedaintegracao"
+          # + as câmeras cadastradas no sistema (as mesmas que aparecem em "Câmeras ao vivo" no admin)
+          EXTRA=$(curl -s --max-time 30 -X POST "$SURL/functions/v1/exa-tela" -H "Authorization: Bearer $ANON" -H "apikey: $ANON" -H "Content-Type: application/json" -d '{"acao":"cameras_lista"}' \
+            | python3 -c "import json,sys,re; d=json.load(sys.stdin); print(' '.join(sorted({m.group(1) for c in d.get('cameras',[]) for m in [re.search(r'portaldacidade/([a-z0-9]+)\.stream/', str(c.get('url','')), re.I)] if m})))" 2>/dev/null)
+          CAMS=$(echo $CAMS $EXTRA | tr ' ' '\n' | sort -u | tr '\n' ' ')
+          echo "câmeras: $CAMS"
+          BASE="https://video02.logicahost.com.br/portaldacidade"
+          FIM=$(( $(date +%s) + MINUTOS * 60 ))
+          mkdir -p /tmp/c
+          oidc() { curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=exa-camera-clipes" | python3 -c 'import sys,json; print(json.load(sys.stdin)["value"])'; }
+          sobe() { # $1 arquivo local, $2 caminho no bucket (o tipo e o cache a função decide)
+            curl -s -o /dev/null -w "%{http_code}" -X POST "$SURL/functions/v1/camera-clipes-subir?op=subir&caminho=$2" \
+              -H "Authorization: Bearer $ANON" -H "apikey: $ANON" -H "x-gh-oidc: $(oidc)" -H "Content-Type: application/octet-stream" --max-time 60 --data-binary @"$1"
+          }
+          um() { # grava, converte e publica um clipe de uma câmera
+            c=$1; t=$(date -u +%Y%m%dT%H%M%SZ); f=/tmp/c/$c-$t.mp4
+            timeout 75 ffmpeg -loglevel error -y -rw_timeout 15000000 -i "$BASE/$c.stream/playlist.m3u8" -t 30 -an \
+              -vf "crop=1620:1080,scale=720:480:flags=lanczos,fps=20,format=yuv420p" \
+              -c:v libx264 -preset medium -tune film -profile:v main -level 3.1 -b:v 1800k -maxrate 2200k -bufsize 3600k -g 40 -keyint_min 40 \
+              -movflags +faststart "$f"
+            dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f" 2>/dev/null | cut -d. -f1)
+            if [ -z "$dur" ] || [ "$dur" -lt 10 ]; then echo "$c: falhou"; rm -f "$f"; return; fi
+            h=$(sobe "$f" "$c/$t.mp4" video/mp4 "max-age=86400")
+            if [ "$h" = "200" ]; then
+              printf '{"arquivo":"%s/%s.mp4","em":"%s","seg":%s}' "$c" "$t" "$(date -u +%FT%TZ)" "$dur" > /tmp/c/$c.json
+              sobe /tmp/c/$c.json "$c/atual.json" application/json "no-cache" >/dev/null
+              echo "$c $t ${dur}s $(du -k "$f" | cut -f1)KB"
+              # apaga clipes antigos desta câmera (fica com os 4 últimos)
+              echo "$c/$t.mp4" >> /tmp/c/$c.lista
+              while [ "$(wc -l < /tmp/c/$c.lista)" -gt 4 ]; do
+                velho=$(head -1 /tmp/c/$c.lista); sed -i 1d /tmp/c/$c.lista
+                curl -s -o /dev/null -X POST "$SURL/functions/v1/camera-clipes-subir?op=apagar&caminho=$velho" -H "Authorization: Bearer $ANON" -H "apikey: $ANON" -H "x-gh-oidc: $(oidc)"
+              done
+            else echo "$c: upload HTTP $h"; fi
+            rm -f "$f"
+          }
+          while [ "$(date +%s)" -lt "$FIM" ]; do
+            for c in $CAMS; do um "$c" & done
+            wait
+          done
