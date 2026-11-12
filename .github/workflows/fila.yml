@@ -1,0 +1,41 @@
+name: fila
+# EXA Mídia — fila da Ponte da Amizade (Brasil -> Paraguai) em tempo real, pelas câmeras públicas do Portal da Cidade.
+# Detecta e acompanha cada veículo (YOLOX-s, Apache 2.0) e publica um resumo por trecho a cada 10 s em
+# camera-clipes/fila/atual.json (bucket público da EXA). Sem segredo: o envio leva um token OIDC do GitHub,
+# conferido pela função camera-clipes-subir. Em TESTE: só roda por push em fila/** ou disparo manual.
+on:
+  workflow_dispatch:
+    inputs:
+      minutos: { description: "quanto tempo fica rodando (máx. 345)", required: false, default: "30" }
+  push:
+    branches: [main]
+    paths: ["fila/**", ".github/workflows/fila.yml"]
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: fila
+  cancel-in-progress: true
+jobs:
+  fila:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      ANON: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFha2Vub2xqc3ljeXJjcmNoZ3hqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY5MDM3NTUsImV4cCI6MjA2MjQ3OTc1NX0.wEKVfJKfQiybyne0yn0dOUwbujb_WXkZHAzlyfHb0lk
+      MINUTOS: ${{ inputs.minutos || '30' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: ffmpeg
+        run: |
+          curl -sSL --retry 3 -o /tmp/ff.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          mkdir -p /tmp/ff && tar -xJf /tmp/ff.tar.xz -C /tmp/ff --strip-components=1
+          echo "/tmp/ff/bin" >> "$GITHUB_PATH"
+      - name: detector
+        run: |
+          pip install -q opencv-python-headless==4.10.0.84 numpy
+          curl -sSL --retry 3 -o /tmp/yolox_s.onnx https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx
+          echo "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063  /tmp/yolox_s.onnx" | sha256sum -c -
+          nproc
+      - name: fila ao vivo
+        run: |
+          python3 fila/fila_worker.py --modelo /tmp/yolox_s.onnx --saida /tmp/atual.json --publicar fila/atual.json --segundos $(( MINUTOS * 60 )) --passo 10
