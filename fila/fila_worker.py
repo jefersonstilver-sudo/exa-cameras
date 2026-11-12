@@ -25,20 +25,20 @@ CAMERAS = {
         eixo=(-0.58, -0.81),
         zona=[(700, 250), (790, 250), (1010, 600), (1420, 1080), (930, 1080), (880, 760), (760, 480)],
         # escala provisória (±30%): perfil de tempo de travessia de 12/11 ancorado nos 132 m mirante -> cabeceira
-        metros=[(202, 0), (255, 12), (330, 40), (450, 75), (600, 108), (735, 132), (900, 147), (1050, 158)]),
+        metros=[(202, 0), (255, 10), (330, 34), (450, 64), (600, 92), (742, 113), (900, 125), (1050, 134)]),
     "aduana": dict(stream="fozaduanapontedaamizade", nome="Curva da aduana",
         recortes=[(560, 0, 1200, 640), (200, 280, 840, 920), (700, 280, 1340, 920)],
         eixo=(-0.80, 0.60), ignora=(7,),
         zona=[(1075, 20), (1215, 20), (1150, 300), (900, 560), (420, 900), (60, 900), (640, 470), (1000, 250)],
         # escala provisória (±25%): comprimento dos carros na imagem (perto ~20 px/m, fundo ~7,6 px/m ao longo da pista)
-        metros=[(20, 83), (200, 55), (400, 34), (600, 18), (800, 6), (900, 0)]),
+        metros=[(20, 145), (64, 127), (117, 107), (200, 86), (313, 67), (387, 54), (493, 40), (640, 18), (800, 6), (900, 0)]),
     "br277": dict(stream="fozsentidopontedaamizade01", nome="BR-277 / viaduto",
         recortes=[(560, 300, 1200, 940), (640, 560, 1280, 1080)],
         eixo=(-0.05, -1.0), ignora=(7,),
         zona=[(858, 420), (990, 420), (1012, 1080), (868, 1080)],
         # escala provisória (±15%): ~3,4 px/m ao longo da pista (faixas de 3,5 m e carretas de 18,6 m como régua);
         # confere com o mapa: o trecho visível são os ~195 m finais da reta antes do viaduto (nó do OSM em -25.50601,-54.58833)
-        metros=[(420, 0), (750, 100), (1080, 194)]),
+        metros=[(420, 0), (500, 45), (600, 98), (700, 148), (800, 196), (900, 240), (1000, 282), (1080, 314)]),
 }
 
 class Detector:
@@ -162,6 +162,44 @@ class Trecho:
                 if v > 0.05: out["tempo_trecho_s"] = round(max(m for _, m in tab) / v)
         return out
 
+# ---- Travessia inteira (viaduto -> ponta paraguaia): junta os 3 trechos vistos e estima os 2 trechos cegos pelos vizinhos.
+# Comprimentos medidos no mapa/satélite (m). VAO_A = curva sem câmera; VAO_B = aduana + parte da ponte sem câmera fixa.
+VAO_A, VAO_B, V_LIVRE = 685, 730, 11.0     # V_LIVRE = 40 km/h quando o trecho está livre
+def travessia(tr):
+    t = {x["trecho"]: x for x in tr}
+    out = dict(estado="indisponivel", motivo=None, fila_min_m=None, fila_max_m=None, tempo_min_s=None, tempo_max_s=None, cauda=None)
+    if any(k not in t or t[k]["estado"] == "indisponivel" for k in ("ponte", "aduana", "br277")):
+        out["motivo"] = "trecho sem leitura: " + ", ".join(k for k in ("ponte", "aduana", "br277") if k not in t or t[k]["estado"] == "indisponivel"); return out
+    fila = lambda k: t[k]["estado"] in ("lento", "parado")
+    cheio = lambda k: fila(k) and (t[k]["fila_m"] or 0) >= 0.7 * t[k]["trecho_m"]      # cauda passa do que a câmera vê
+    vel = lambda k: max((t[k]["kmh"] or 0) / 3.6, 0.3) if fila(k) else max((t[k]["kmh"] or 0) / 3.6, V_LIVRE)
+    tmin = tmax = sum(t[k]["trecho_m"] / vel(k) for k in ("ponte", "aduana", "br277"))
+    fmin = fmax = 0; cauda = "sem fila na ponta paraguaia"; aberta = False
+    def vao(comp, baixo, cima):
+        # devolve (tempo_min, tempo_max, fila_min, fila_max, continua_para_cima)
+        if not cheio(baixo): return comp / V_LIVRE, comp / V_LIVRE, 0, 0, False
+        if fila(cima):                                    # fila nas duas pontas -> o meio também está em fila
+            a, b = sorted((vel(baixo), vel(cima))); return comp / b, comp / a, comp, comp, True
+        return comp / V_LIVRE, comp / vel(baixo), 0, comp, False   # cauda está dentro do trecho cego
+    if fila("ponte"):
+        fmin = fmax = t["ponte"]["fila_m"] or 0; cauda = "na ponte (visivel)"
+        a, b, c, d, segue = vao(VAO_B, "ponte", "aduana"); tmin += a; tmax += b; fmin += c; fmax += d
+        if cheio("ponte"): cauda = "entre a aduana e a ponte (sem camera)"
+        if segue:
+            fmin += t["aduana"]["fila_m"] or 0; fmax += t["aduana"]["fila_m"] or 0; cauda = "na curva da aduana (visivel)"
+            a, b, c, d, segue = vao(VAO_A, "aduana", "br277"); tmin += a; tmax += b; fmin += c; fmax += d
+            if cheio("aduana"): cauda = "na curva antes da aduana (sem camera)"
+            if segue:
+                fmin += t["br277"]["fila_m"] or 0; fmax += t["br277"]["fila_m"] or 0; cauda = "na BR-277 (visivel)"
+                if cheio("br277"): aberta = True; cauda = "antes do viaduto (alem das cameras)"
+        else: tmin += VAO_A / V_LIVRE; tmax += VAO_A / V_LIVRE
+    else:
+        tmin += (VAO_A + VAO_B) / V_LIVRE; tmax += (VAO_A + VAO_B) / V_LIVRE
+    out.update(estado="estimado" if fmax > fmin or aberta else "medido", fila_min_m=round(fmin), fila_max_m=None if aberta else round(fmax),
+               tempo_min_s=round(tmin), tempo_max_s=None if aberta else round(tmax), cauda=cauda,
+               fila_local_viaduto=bool(fila("br277") and not cheio("aduana")), percurso_m=VAO_A + VAO_B + sum(t[k]["trecho_m"] for k in ("ponte", "aduana", "br277")))
+    return out
+
 def leitor(chave, fonte, fila, fim, ao_vivo):
     """ffmpeg -> quadros 1920x1080 BGR, 1 por segundo. Ao vivo guarda só o mais novo (nunca acumula atraso)."""
     cmd = ["ffmpeg", "-loglevel", "error"] + (["-rw_timeout", "15000000"] if ao_vivo else []) + ["-i", fonte, "-an", "-vf", "fps=5,scale=1920:1080", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
@@ -214,8 +252,9 @@ def main():
         if prox is None: prox = relogio + a.passo
         if relogio >= prox:
             prox += a.passo
-            res = dict(versao="0.4", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
+            res = dict(versao="0.5", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
                        trechos=[tr.resumo(relogio, a.janela) for tr in trechos.values()], ms_por_quadro=round(1000 * float(np.mean(gasto[-30:])) if gasto else 0))
+            res["travessia"] = travessia(res["trechos"])
             json.dump(res, open(a.saida + ".tmp", "w"), ensure_ascii=False); os.replace(a.saida + ".tmp", a.saida); hist.append(res); hist[:] = hist[-360:]
             if a.publicar: pub = publicar(a.saida, a.publicar, anon)
             print(json.dumps({"t": res["t"], **{x["trecho"]: [x["estado"], x["veiculos"], x["parado_pct"], x["kmh"], x["fila_m"]] for x in res["trechos"]}, "ms": res["ms_por_quadro"], "pub": pub}, ensure_ascii=False), flush=True)
