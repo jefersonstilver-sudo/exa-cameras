@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EXA — fila da Ponte da Amizade (Brasil -> Paraguai) em tempo real. v0.3 (12/11/2026)
+"""EXA — fila da Ponte da Amizade (Brasil -> Paraguai) em tempo real. v0.4 (12/11/2026)
 
 Lê as câmeras fixas do Portal da Cidade (ou gravações, para teste), detecta cada veículo (YOLOX-s, Apache 2.0,
 via OpenCV), acompanha veículo a veículo e publica a cada PASSO segundos um resumo por trecho:
@@ -30,12 +30,15 @@ CAMERAS = {
         recortes=[(560, 0, 1200, 640), (200, 280, 840, 920), (700, 280, 1340, 920)],
         eixo=(-0.80, 0.60), ignora=(7,),
         zona=[(1075, 20), (1215, 20), (1150, 300), (900, 560), (420, 900), (60, 900), (640, 470), (1000, 250)],
-        metros=None),
+        # escala provisória (±25%): comprimento dos carros na imagem (perto ~20 px/m, fundo ~7,6 px/m ao longo da pista)
+        metros=[(20, 83), (200, 55), (400, 34), (600, 18), (800, 6), (900, 0)]),
     "br277": dict(stream="fozsentidopontedaamizade01", nome="BR-277 / viaduto",
         recortes=[(560, 300, 1200, 940), (640, 560, 1280, 1080)],
         eixo=(-0.05, -1.0), ignora=(7,),
         zona=[(858, 420), (990, 420), (1012, 1080), (868, 1080)],
-        metros=None),
+        # escala provisória (±15%): ~3,4 px/m ao longo da pista (faixas de 3,5 m e carretas de 18,6 m como régua);
+        # confere com o mapa: o trecho visível são os ~195 m finais da reta antes do viaduto (nó do OSM em -25.50601,-54.58833)
+        metros=[(420, 0), (750, 100), (1080, 194)]),
 }
 
 class Detector:
@@ -132,7 +135,7 @@ class Trecho:
         s.cont.append((agora, na_zona)); s.cont = s.cont[-200:]
     def resumo(s, agora, janela):
         A = [a for a in s.amostras if a["t"] >= agora - janela]; s.amostras = [a for a in s.amostras if a["t"] >= agora - 120]
-        out = dict(trecho=s.chave, nome=s.cfg["nome"], estado="indisponivel", motivo=None, veiculos=None, parados=None, parado_pct=None, kmh=None, fila_m=None, tempo_trecho_s=None, confianca=0)
+        out = dict(trecho=s.chave, nome=s.cfg["nome"], trecho_m=(max(m for _, m in s.cfg["metros"]) if s.cfg["metros"] else None), estado="indisponivel", motivo=None, veiculos=None, parados=None, parado_pct=None, kmh=None, fila_m=None, tempo_trecho_s=None, confianca=0)
         if agora - s.ultimo > 15 or s.quadros < 3: out["motivo"] = "camera sem imagem"; return out
         br, nt = np.mean(s.brilho[-8:]), np.mean(s.nitidez[-8:])
         if br < 35: out["motivo"] = "escuro demais"; return out
@@ -150,13 +153,13 @@ class Trecho:
             med = float(np.median(rel))
             out["estado"] = "parado" if (parados > 0.6 or med < 0.03) else ("lento" if med < 0.45 else "livre")
             out["confianca"] = int(min(90, 40 + 5 * acompanhados))
-        if s.cfg["metros"] and len(A) >= 8 and out["estado"] != "livre":
+        if s.cfg["metros"] and len(A) >= 8:
             vm = np.array([a["vm"] for a in A if a["vm"] is not None]); v = float(np.clip(vm.mean(), 0, None))
             out["kmh"] = round(v * 3.6, 1)
             ys = sorted(a["y"] for a in A if a["t"] == max(x["t"] for x in A))
             if out["estado"] != "livre" and len(ys) >= 3:
-                tab = s.cfg["metros"]; out["fila_m"] = round(metros_de(tab, ys[-1]) - metros_de(tab, ys[0]))
-                if v > 0.05: out["tempo_trecho_s"] = round(tab[-1][1] / v)
+                tab = s.cfg["metros"]; out["fila_m"] = round(abs(metros_de(tab, ys[-1]) - metros_de(tab, ys[0])))
+                if v > 0.05: out["tempo_trecho_s"] = round(max(m for _, m in tab) / v)
         return out
 
 def leitor(chave, fonte, fila, fim, ao_vivo):
@@ -211,7 +214,7 @@ def main():
         if prox is None: prox = relogio + a.passo
         if relogio >= prox:
             prox += a.passo
-            res = dict(versao="0.3", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
+            res = dict(versao="0.4", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
                        trechos=[tr.resumo(relogio, a.janela) for tr in trechos.values()], ms_por_quadro=round(1000 * float(np.mean(gasto[-30:])) if gasto else 0))
             json.dump(res, open(a.saida + ".tmp", "w"), ensure_ascii=False); os.replace(a.saida + ".tmp", a.saida); hist.append(res); hist[:] = hist[-360:]
             if a.publicar: pub = publicar(a.saida, a.publicar, anon)
