@@ -156,6 +156,7 @@ class Trecho:
         if s.cfg["metros"] and len(A) >= 8:
             vm = np.array([a["vm"] for a in A if a["vm"] is not None]); v = float(np.clip(vm.mean(), 0, None))
             out["kmh"] = round(v * 3.6, 1)
+            if out["estado"] != "livre" and v * 3.6 >= 20: out["estado"] = "livre"     # a 20 km/h ou mais não é fila, seja qual for o tamanho da caixa
             ys = sorted(a["y"] for a in A if a["t"] == max(x["t"] for x in A))
             if out["estado"] != "livre" and len(ys) >= 3:
                 tab = s.cfg["metros"]; out["fila_m"] = round(abs(metros_de(tab, ys[-1]) - metros_de(tab, ys[0])))
