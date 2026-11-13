@@ -145,7 +145,24 @@ class Trecho:
         s.quadros += 1; s.ultimo = agora
         g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY); peq = cv2.resize(g, (480, 270)); s.brilho.append(float(peq.mean())); s.nitidez.append(float(cv2.Laplacian(peq, cv2.CV_64F).var()))
         x0, x1 = s.dx0, s.dx1; rec = g[:, x0:x1].astype(np.float32); forte = cv2.magnitude(cv2.Sobel(rec, cv2.CV_32F, 1, 0), cv2.Sobel(rec, cv2.CV_32F, 0, 1)) > 60; L = s.dl[:, x0:x1]
-        ocup = [[float(forte[y:y + 40][L[y:y + 40] == f + 1].mean()) for y in s.FAIXAS_Y] for f in range(s.nf)]
+        # 13/11 14h: ocupação = fração de pixels ESCUROS (vidro, pneu, sombra embaixo do carro). Asfalto e pintura (zebrado) não têm
+        # pixel escuro; borda forte tinha, e o zebrado vazio parecia cheio. Limiar acompanha a luz do momento.
+        esc = g < 0.42 * np.percentile(g[420:1060, 880:1110], 75); E = esc[:, x0:x1]
+        ocup = [[float(E[y:y + 40][L[y:y + 40] == f + 1].mean()) for y in s.FAIXAS_Y] for f in range(s.nf)]
+        # grade: fatias de 40 px x blocos de 8 px em toda a largura da pista (inclui o zebrado, que vira coluna extra quando trava).
+        # colunas de veículos na fatia = largura ocupada / largura de uma faixa; não depende de o motorista respeitar a faixa.
+        Bd = np.array(s.cfg["bordas"], float); cc = []; ct = []; cel = []
+        for y in s.FAIXAS_Y:
+            ym = y + 20; xl = float(np.interp(ym, [420, 560, 700, 1080], [878, 878, 886, 886])); xs = float(np.interp(ym, Bd[:, 0], Bd[:, 3])); xr = float(np.interp(ym, Bd[:, 0], Bd[:, 4]))
+            faixa_px = (xr - float(np.interp(ym, Bd[:, 0], Bd[:, 1]))) / 3.0; oc = ot = 0; lin = []
+            x = int(xl)
+            while x + 8 <= xr:
+                if float(esc[y:y + 40, x:x + 8].mean()) >= 0.06:
+                    lin.append(x)
+                    if x + 4 < xs: oc += 8
+                    else: ot += 8
+                x += 8
+            cc.append(min(oc / faixa_px, 3.0)); ct.append(min(ot / faixa_px, 1.2)); cel.append(lin)
         z = np.zeros(0)
         yr, fr_, vr = s._fluxo(cv2.cvtColor(img_ant, cv2.COLOR_BGR2GRAY), g, PAR) if img_ant is not None else (z, z, z)
         velho = [h for h in s.dhist if 2.0 <= agora - h[0] <= 9.5]
@@ -159,7 +176,7 @@ class Trecho:
                 ra = float(np.median(a)) * mpp if len(a) >= 4 else None; lb = float(np.median(b)) * mpp if len(b) >= 4 else None
                 vf.append(ra if (ra is not None and (abs(ra) >= 2.0 or lb is None)) else lb)
             v.append(vf)
-        s.dam.append(dict(t=agora, ocup=ocup, v=v, n=int(len(yl) + len(yr)))); s.dam = [a for a in s.dam if a["t"] >= agora - 120]
+        s.dam.append(dict(t=agora, ocup=ocup, v=v, n=int(len(yl) + len(yr)), cc=cc, ct=ct)); s.dam = [a for a in s.dam if a["t"] >= agora - 120]
         s.dhist.append((agora, g)); s.dhist = [h for h in s.dhist if h[0] >= agora - 10]
         if not hasattr(s, "ult_acc"): s.ult_acc = []
         if s.dacc and det is not None and s.quadros % 3 == 1:        # acessos: detector a cada 3 quadros
@@ -172,7 +189,7 @@ class Trecho:
             s.dac_cont.append((agora, n, cam)); s.dac_cont = s.dac_cont[-40:]
             s.ult_acc = [[int(c) for c in bb] + [int(any(cv2.pointPolygonTest(zz, (float((bb[0] + bb[2]) / 2), float((bb[1] + bb[3]) / 2)), False) >= 0 for zz in s.dacc) and int(kk) != 3)] for bb, kk in zip(b, k)]
             s.ult_acc = [c for c in s.ult_acc if c[4]]
-        s.ult = dict(t=agora, img=s._foto(img), caixas=s.ult_acc, fatias=[[int(o >= 0.5) for o in of] for of in ocup], fatias_y=s.FAIXAS_Y)
+        s.ult = dict(t=agora, img=s._foto(img), caixas=s.ult_acc, fatias=[[int(o >= 0.08) for o in of] for of in ocup], fatias_y=s.FAIXAS_Y, celulas=cel, colunas_carros=[round(c, 1) for c in cc], colunas_direita=[round(c, 1) for c in ct])
     def resumo_denso(s, agora, janela, out):
         A = [a for a in s.dam if a["t"] >= agora - janela]
         if len(A) < 3: out["motivo"] = "poucos quadros"; return out
@@ -181,7 +198,7 @@ class Trecho:
             ocup = np.median(np.array([a["ocup"][f] for a in A]), 0)
             V = np.array([[np.nan if x is None else x for x in a["v"][f]] for a in A], float)
             with np.errstate(all="ignore"): vb = np.nanmedian(V, 0)
-            lenta = (ocup >= 0.5) & ~(np.nan_to_num(vb, nan=0.0) * 3.6 >= 20)
+            lenta = (ocup >= 0.08) & ~(np.nan_to_num(vb, nan=0.0) * 3.6 >= 20)
             fim = 0; buraco = 0                 # fila = fatias ocupadas e lentas a partir do fim do trecho (topo), tolerando 1 buraco
             for i, ok in enumerate(lenta):
                 if ok: fim = i + 1; buraco = 0
@@ -200,14 +217,21 @@ class Trecho:
         for i, a in enumerate(s.cfg.get("acessos", [])):
             n = int(round(float(np.median([c[1][i] for c in C])))) if C else None; cm = int(round(float(np.median([c[2][i] for c in C])))) if C else None
             acessos.append(dict(nome=a["nome"], pelo_menos=n, caminhoes_ou_onibus=cm))
-        carros = [f for f, cf in zip(faixas, s.cfg["faixas"]) if not cf.get("caminhoes")]; pior = max(carros, key=lambda f: f["fila_m"])
-        vs = [f["_v"] for f in carros if f["_v"] is not None and f["_fim"] >= 3] or [f["_v"] for f in carros if f["_v"] is not None]
+        fx_carros = [f for f, cf in zip(faixas, s.cfg["faixas"]) if not cf.get("caminhoes")]; pior = max(fx_carros, key=lambda f: f["fila_m"])
+        vs = [f["_v"] for f in fx_carros if f["_v"] is not None and f["_fim"] >= 3] or [f["_v"] for f in fx_carros if f["_v"] is not None]
         v = float(np.median(vs)) if vs else None; fila_m = pior["fila_m"]; fim = pior["_fim"]
-        pontos = float(np.mean([a["n"] for a in A])); nas_faixas = sum(f["veiculos"] for f in faixas); nos_acessos = sum(a["pelo_menos"] or 0 for a in acessos)
+        pontos = float(np.mean([a["n"] for a in A])); nos_acessos = sum(a["pelo_menos"] or 0 for a in acessos)
+        # contagem pela grade: soma, fatia a fatia, de (colunas de veículos x metros da fatia / passo). K = calibração a olho em 2 quadros
+        # (11h41: 43 carros e 14 na faixa da direita; 14h04: ~39 e ~15) -> carros x1,37 (teto branco não tem pixel escuro), direita x0,90.
+        K_CARROS, K_DIR = 1.37, 0.90
+        CC = np.median(np.array([a["cc"] for a in A]), 0); CT = np.median(np.array([a["ct"] for a in A]), 0)
+        mf = [metros_de(tab, y + 40) - metros_de(tab, y) for y in s.FAIXAS_Y]
+        carros = K_CARROS * sum(c * m / 6.5 for c, m in zip(CC, mf) if c >= 0.6); direita = K_DIR * sum(c * m / 10.0 for c, m in zip(CT, mf) if c >= 0.5)
+        nas_faixas = round(carros + direita)
         for f in faixas: f.pop("_v"); f.pop("_fim")
-        out.update(veiculos=nas_faixas + nos_acessos, veiculos_estimado=True, veiculos_nas_faixas=nas_faixas, veiculos_nos_acessos_min=nos_acessos, faixas=faixas, acessos=acessos,
+        out.update(carros_2_faixas=round(carros), veiculos_faixa_direita=round(direita), colunas_por_fatia=[round(float(c), 1) for c in CC], margem_pct=10, veiculos=nas_faixas + nos_acessos, veiculos_estimado=True, veiculos_nas_faixas=nas_faixas, veiculos_nos_acessos_min=nos_acessos, faixas=faixas, acessos=acessos,
                    ocupacao_pct=round(float(np.mean([f["ocupacao_pct"] for f in faixas]))), fila_m=fila_m if fim else None, kmh=None if v is None else round(v * 3.6, 1),
-                   confianca=int(min(85, 45 + pontos / 10)), cauda_alem=any(f["cauda_alem"] for f in carros), parado_pct=max(f["parado_pct"] for f in carros))
+                   confianca=int(min(85, 45 + pontos / 10)), cauda_alem=any(f["cauda_alem"] for f in fx_carros), parado_pct=max(f["parado_pct"] for f in fx_carros))
         if fim < 3 or v is None: out["estado"] = "livre"
         else: out["estado"] = "parado" if v * 3.6 < 2.0 else ("lento" if v * 3.6 < 20 else "livre")
         if out["estado"] == "livre": out["fila_m"] = None; out["parado_pct"] = None
@@ -415,7 +439,7 @@ def main():
         if prox is None: prox = relogio + a.passo
         if relogio >= prox:
             prox += a.passo
-            res = dict(versao="0.11", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
+            res = dict(versao="0.12", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
                        trechos=[tr.resumo(relogio, a.janela) for tr in trechos.values()], ms_por_quadro=round(1000 * float(np.mean(gasto[-30:])) if gasto else 0))
             res["travessia"] = travessia(res["trechos"])
             json.dump(res, open(a.saida + ".tmp", "w"), ensure_ascii=False); os.replace(a.saida + ".tmp", a.saida); hist.append(res); hist[:] = hist[-360:]
