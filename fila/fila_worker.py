@@ -335,19 +335,22 @@ def travessia(tr, estavel=True):
         f = min(t[k]["fila_m"] or t[k]["trecho_m"], t[k]["trecho_m"]); return f / vel(k) + (t[k]["trecho_m"] - f) / V_LIVRE
     tmin = tmax = sum(t_trecho(k) for k in ("ponte", "aduana", "br277"))
     fmin = fmax = 0; cauda = "sem fila na ponta paraguaia"; aberta = False
-    def vao(comp, baixo, cima):
+    P = {}                                     # quanto de fila em cada trecho cego: (mín, máx) em metros
+    def vao(comp, baixo, cima, funil=False):
         # devolve (tempo_min, tempo_max, fila_min, fila_max, continua_para_cima)
         if not cheio(baixo): return comp / V_LIVRE, comp / V_LIVRE, 0, 0, False
-        if fila(cima):                                    # fila nas duas pontas -> o meio também está em fila
+        if fila(cima) and not funil:                      # fila nas duas pontas -> o meio também está em fila
             a, b = sorted((vel(baixo), vel(cima))); return comp / b, comp / a, comp, comp, True
-        return comp / V_LIVRE, comp / vel(baixo), 0, comp, False   # cauda está dentro do trecho cego
+        # cauda dentro do trecho cego. Vale também quando a ponta de cima é um FUNIL (junção do viaduto): a fila de lá nasce
+        # da própria junção, não prova que a fila da ponte chegou até ela (13/11 11h41: viaduto travado e curva livre).
+        return comp / V_LIVRE, comp / vel(baixo), 0, comp, False
     if fila("ponte"):
         fmin = fmax = t["ponte"]["fila_m"] or 0; cauda = "na ponte (visivel)"
-        a, b, c, d, segue = vao(VAO_B, "ponte", "aduana"); tmin += a; tmax += b; fmin += c; fmax += d
+        a, b, c, d, segue = vao(VAO_B, "ponte", "aduana"); tmin += a; tmax += b; fmin += c; fmax += d; P["B"] = (c, d)
         if cheio("ponte"): cauda = "entre a aduana e a ponte (sem camera)"
         if segue:
             fmin += t["aduana"]["fila_m"] or 0; fmax += t["aduana"]["fila_m"] or 0; cauda = "na curva da aduana (visivel)"
-            a, b, c, d, segue = vao(VAO_A, "aduana", "br277"); tmin += a; tmax += b; fmin += c; fmax += d
+            a, b, c, d, segue = vao(VAO_A, "aduana", "br277", funil=True); tmin += a; tmax += b; fmin += c; fmax += d; P["A"] = (c, d)
             if cheio("aduana"): cauda = "na curva antes da aduana (sem camera)"
             if segue:
                 fmin += t["br277"]["fila_m"] or 0; fmax += t["br277"]["fila_m"] or 0; cauda = "na BR-277 (visivel)"
@@ -364,6 +367,16 @@ def travessia(tr, estavel=True):
     if fila("aduana") and cauda.startswith(("sem fila", "na ponte", "entre a aduana")) :
         f = t["aduana"]["fila_m"] or 0; fmin += f; fmax += f; separadas.append(dict(onde="chegada a aduana", fila_m=round(f), alem_da_camera=False))
     out["filas_separadas"] = separadas
+    # Onde está cada pedaço da fila, do viaduto até o Paraguai: o que é CONTADO por câmera e o que é CONTA de trecho sem câmera
+    # (2 faixas, um carro a cada 6,5 m). Em trecho sem câmera a fila pode ser de 0 até o trecho inteiro.
+    cam = lambda k, nome: dict(onde=nome, tipo="camera", fila_min_m=round(t[k]["fila_m"] or 0) if fila(k) else 0, fila_max_m=round(t[k]["fila_m"] or 0) if fila(k) else 0,
+                               carros_min=round(t[k]["veiculos"] or 0), carros_max=round(t[k]["veiculos"] or 0))
+    sem = lambda q, nome, comp: dict(onde=nome, tipo="sem camera", trecho_m=comp, fila_min_m=round(P.get(q, (0, 0))[0]), fila_max_m=round(P.get(q, (0, 0))[1]),
+                                     carros_min=round(P.get(q, (0, 0))[0] * 2 / 6.5), carros_max=round(P.get(q, (0, 0))[1] * 2 / 6.5))
+    out["partes"] = [cam("br277", "viaduto da BR-277"), sem("A", "curva depois do viaduto", VAO_A), cam("aduana", "chegada a aduana"),
+                     sem("B", "aduana e inicio da ponte", VAO_B), cam("ponte", "ponta paraguaia da ponte")]
+    out["carros_contados"] = sum(p["carros_min"] for p in out["partes"] if p["tipo"] == "camera")
+    out["carros_min"] = sum(p["carros_min"] for p in out["partes"]); out["carros_max"] = None if aberta else sum(p["carros_max"] for p in out["partes"])
     # Nível de precisão (0-100) DO QUE O CARTÃO AFIRMA (não de um total que ele não mostra):
     #  - fila além das câmeras: o cartão só diz "mais de X" e as velocidades vistas -> vale a confiança das câmeras, pesada pelos metros;
     #  - cauda dentro de um trecho cego: o cartão dá uma FAIXA que cobre o trecho inteiro -> 90% do pior vizinho;
@@ -439,7 +452,7 @@ def main():
         if prox is None: prox = relogio + a.passo
         if relogio >= prox:
             prox += a.passo
-            res = dict(versao="0.12", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
+            res = dict(versao="0.13", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
                        trechos=[tr.resumo(relogio, a.janela) for tr in trechos.values()], ms_por_quadro=round(1000 * float(np.mean(gasto[-30:])) if gasto else 0))
             res["travessia"] = travessia(res["trechos"])
             json.dump(res, open(a.saida + ".tmp", "w"), ensure_ascii=False); os.replace(a.saida + ".tmp", a.saida); hist.append(res); hist[:] = hist[-360:]
