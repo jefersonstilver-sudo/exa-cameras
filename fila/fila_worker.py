@@ -144,12 +144,20 @@ class Trecho:
         velho = [h for h in s.gh if 1.5 <= agora - h[0] <= 4]
         if not velho: return
         t0, g0 = velho[0]; m = np.zeros_like(g); cv2.fillPoly(m, [s.zona], 255)
-        p = cv2.goodFeaturesToTrack(g0, 900, 0.01, 5, mask=m)
-        if p is None: return
-        q, ok, _ = cv2.calcOpticalFlowPyrLK(g0, g, p, None, winSize=(21, 21), maxLevel=3)
-        r, ok2, _ = cv2.calcOpticalFlowPyrLK(g, g0, q, None, winSize=(21, 21), maxLevel=3)
-        bom = (ok.ravel() == 1) & (ok2.ravel() == 1) & (np.linalg.norm((r - p).reshape(-1, 2), axis=1) < 1.0)
-        P = p.reshape(-1, 2)[bom]; D = (q - p).reshape(-1, 2)[bom] / (agora - t0)
+        def flx(msk, n):
+            p = cv2.goodFeaturesToTrack(g0, n, 0.01, 5, mask=msk)
+            if p is None: return np.zeros((0, 2)), np.zeros((0, 2))
+            q, ok, _ = cv2.calcOpticalFlowPyrLK(g0, g, p, None, winSize=(21, 21), maxLevel=3)
+            r, ok2, _ = cv2.calcOpticalFlowPyrLK(g, g0, q, None, winSize=(21, 21), maxLevel=3)
+            bom = (ok.ravel() == 1) & (ok2.ravel() == 1) & (np.linalg.norm((r - p).reshape(-1, 2), axis=1) < 1.0)
+            return p.reshape(-1, 2)[bom], (q - p).reshape(-1, 2)[bom] / (agora - t0)
+        P, D = flx(m, 900)
+        if not len(P): return
+        # a câmera da ponte às vezes desliza devagar: o movimento do cenário parado (mato, prédios) é descontado de todos os pontos
+        fundo = np.full_like(g, 255); cv2.fillPoly(fundo, [cv2.convexHull(np.array([(600, 240), (900, 240), (1500, 1080), (820, 1080)], np.int32))], 0)
+        Pf, Df = flx(fundo, 400)
+        s.desliza = [round(float(v), 2) for v in np.median(Df, 0)] if len(Df) >= 20 else [0.0, 0.0]
+        D = D - np.array(s.desliza)
         for c in range(d["ncol"]):
             sel = [i for i in range(len(P)) if s._col(P[i, 0], P[i, 1]) == c and np.hypot(*D[i]) > 1.5]
             if len(sel) < 6: s.coldy[c] = None; continue
@@ -348,7 +356,7 @@ class Trecho:
             if conta and s.cfg.get("deck"): cc = s._col(x, y); conta = int(cc is not None and s.colpy[cc])
             cx.append([int(c) for c in v["cx"]] + [conta])
         s.ult = dict(t=agora, img=s._foto(img), caixas=cx, contados=sum(c[4] for c in cx), alinhamento=getattr(s, "reg", None))
-        if s.cfg.get("deck"): s.ult.update(colunas_py=[int(v) for v in s.colpy], colunas_dy=s.coldy, deck=s.cfg["deck"])
+        if s.cfg.get("deck"): s.ult.update(colunas_py=[int(v) for v in s.colpy], colunas_dy=s.coldy, deck=s.cfg["deck"], desliza=getattr(s, "desliza", None))
     def resumo(s, agora, janela):
         A = [a for a in s.amostras if a["t"] >= agora - janela]; s.amostras = [a for a in s.amostras if a["t"] >= agora - 120]
         out = dict(trecho=s.chave, nome=s.cfg["nome"], capacidade=s.cap(), trecho_m=(max(m for _, m in s.cfg["metros"]) if s.cfg["metros"] else None), estado="indisponivel", motivo=None, veiculos=None, parados=None, parado_pct=None, kmh=None, fila_m=None, tempo_trecho_s=None, confianca=0)
@@ -531,7 +539,7 @@ def main():
         if prox is None: prox = relogio + a.passo
         if relogio >= prox:
             prox += a.passo
-            res = dict(versao="0.15", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
+            res = dict(versao="0.16", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
                        trechos=[tr.resumo(relogio, a.janela) for tr in trechos.values()], ms_por_quadro=round(1000 * float(np.mean(gasto[-30:])) if gasto else 0))
             res["travessia"] = travessia(res["trechos"])
             json.dump(res, open(a.saida + ".tmp", "w"), ensure_ascii=False); os.replace(a.saida + ".tmp", a.saida); hist.append(res); hist[:] = hist[-360:]
