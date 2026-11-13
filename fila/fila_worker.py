@@ -8,7 +8,7 @@ Regra do Jeferson: quando não dá para ver direito, NÃO publica número — o 
 
 uso:  fila_worker.py --modelo yolox_s.onnx --saida atual.json [--arquivo cam=video.ts ...] [--segundos 300] [--passo 10]
 """
-import argparse, json, os, subprocess, sys, threading, time, urllib.request
+import base64, argparse, json, os, subprocess, sys, threading, time, urllib.request
 import cv2, numpy as np
 
 BASE = "https://video02.logicahost.com.br/portaldacidade/%s.stream/playlist.m3u8"
@@ -105,6 +105,8 @@ class Trecho:
     def __init__(s, chave, cfg):
         s.chave, s.cfg, s.r = chave, cfg, Rastreador(); s.zona = np.array(cfg["zona"], np.int32); s.eixo = np.array(cfg["eixo"]); s.amostras = []
         s.quadros = 0; s.ultimo = 0.0; s.brilho = []; s.nitidez = []; s.cont = []
+    def _foto(s, img):
+        ok, b = cv2.imencode(".jpg", cv2.resize(img, (640, 360), interpolation=cv2.INTER_AREA), [cv2.IMWRITE_JPEG_QUALITY, 50]); return base64.b64encode(b.tobytes()).decode() if ok else None
     def rapido(s, cinza_ant, cinza, caixa):
         """Velocidade instantânea (px/s no sentido Paraguai) de um veículo entre dois quadros a 0,2 s — não depende de identidade."""
         x0, y0, x1, y1 = [int(v) for v in caixa]; mx, my = int((x1 - x0) * 0.2), int((y1 - y0) * 0.2)
@@ -159,6 +161,7 @@ class Trecho:
             v.append(vf)
         s.dam.append(dict(t=agora, ocup=ocup, v=v, n=int(len(yl) + len(yr)))); s.dam = [a for a in s.dam if a["t"] >= agora - 120]
         s.dhist.append((agora, g)); s.dhist = [h for h in s.dhist if h[0] >= agora - 10]
+        if not hasattr(s, "ult_acc"): s.ult_acc = []
         if s.dacc and det is not None and s.quadros % 3 == 1:        # acessos: detector a cada 3 quadros
             b, c, k = det.detectar(img, s.cfg["recortes"], 0.25); n = [0] * len(s.dacc); cam = [0] * len(s.dacc)
             for bb, kk in zip(b, k):
@@ -167,6 +170,9 @@ class Trecho:
                 for i, zz in enumerate(s.dacc):
                     if cv2.pointPolygonTest(zz, pt, False) >= 0: n[i] += 1; cam[i] += int(int(kk) in (5, 7)); break
             s.dac_cont.append((agora, n, cam)); s.dac_cont = s.dac_cont[-40:]
+            s.ult_acc = [[int(c) for c in bb] + [int(any(cv2.pointPolygonTest(zz, (float((bb[0] + bb[2]) / 2), float((bb[1] + bb[3]) / 2)), False) >= 0 for zz in s.dacc) and int(kk) != 3)] for bb, kk in zip(b, k)]
+            s.ult_acc = [c for c in s.ult_acc if c[4]]
+        s.ult = dict(t=agora, img=s._foto(img), caixas=s.ult_acc, fatias=[[int(o >= 0.5) for o in of] for of in ocup], fatias_y=s.FAIXAS_Y)
     def resumo_denso(s, agora, janela, out):
         A = [a for a in s.dam if a["t"] >= agora - janela]
         if len(A) < 3: out["motivo"] = "poucos quadros"; return out
@@ -234,6 +240,14 @@ class Trecho:
             if rel is None: continue
             s.amostras.append(dict(t=agora, id=i, y=y, rel=rel, vm=vm, k=v["k"]))
         s.cont.append((agora, na_zona)); s.cont = s.cont[-200:]
+        # para a página de monitor: o quadro analisado (reduzido) e cada veículo contado (1) ou não (0: fora da área, moto, ignorado)
+        cx = []
+        for i, v in vivos.items():
+            if v["visto"] != agora or "cx" not in v: continue
+            x, y = v["h"][-1][1], v["h"][-1][2]
+            conta = int(v["k"] != 3 and v["k"] not in s.cfg.get("ignora", ()) and cv2.pointPolygonTest(s.zona, (x, y), False) >= 0)
+            cx.append([int(c) for c in v["cx"]] + [conta])
+        s.ult = dict(t=agora, img=s._foto(img), caixas=cx, contados=sum(c[4] for c in cx))
     def resumo(s, agora, janela):
         A = [a for a in s.amostras if a["t"] >= agora - janela]; s.amostras = [a for a in s.amostras if a["t"] >= agora - 120]
         out = dict(trecho=s.chave, nome=s.cfg["nome"], capacidade=s.cfg.get("capacidade"), trecho_m=(max(m for _, m in s.cfg["metros"]) if s.cfg["metros"] else None), estado="indisponivel", motivo=None, veiculos=None, parados=None, parado_pct=None, kmh=None, fila_m=None, tempo_trecho_s=None, confianca=0)
@@ -255,6 +269,8 @@ class Trecho:
             med = float(np.median(rel))
             out["estado"] = "parado" if (parados > 0.6 or med < 0.03) else ("lento" if med < 0.45 else "livre")
             out["confianca"] = int(min(90, 40 + 5 * acompanhados))
+        # fila exige densidade: poucos veículos passando devagar (lombada, curva) não são fila
+        if s.cfg.get("capacidade") and out["estado"] != "livre" and por_quadro < 0.25 * s.cfg["capacidade"]: out["estado"] = "livre"; out["motivo"] = "poucos veiculos na imagem"
         if s.cfg["metros"] and len(A) >= 8:
             vm = np.array([a["vm"] for a in A if a["vm"] is not None]); v = float(np.clip(vm.mean(), 0, None))
             out["kmh"] = round(v * 3.6, 1)
@@ -399,18 +415,18 @@ def main():
         if prox is None: prox = relogio + a.passo
         if relogio >= prox:
             prox += a.passo
-            res = dict(versao="0.10", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
+            res = dict(versao="0.11", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
                        trechos=[tr.resumo(relogio, a.janela) for tr in trechos.values()], ms_por_quadro=round(1000 * float(np.mean(gasto[-30:])) if gasto else 0))
             res["travessia"] = travessia(res["trechos"])
             json.dump(res, open(a.saida + ".tmp", "w"), ensure_ascii=False); os.replace(a.saida + ".tmp", a.saida); hist.append(res); hist[:] = hist[-360:]
             if a.publicar: pub = publicar(a.saida, a.publicar, anon)
-            if a.publicar and len(hist) % 6 == 0:      # a cada minuto: histórico resumido da última hora (para a página de monitor)
+            if a.publicar or a.historico:      # para a página de monitor: histórico da última hora + o quadro que o sistema acabou de analisar em cada câmera
                 def curto(r):
                     t = {x["trecho"]: x for x in r["trechos"]}; v = r.get("travessia") or {}
                     return [r["em"], v.get("tempo_min_s"), v.get("tempo_max_s"), v.get("fila_min_m"), v.get("precisao_pct")] + [t.get(k, {}).get(c) for k in ("ponte", "aduana", "br277") for c in ("kmh", "fila_m", "veiculos")]
                 json.dump(dict(campos=["em", "tempo_min_s", "tempo_max_s", "fila_min_m", "precisao_pct", "ponte_kmh", "ponte_fila_m", "ponte_veic", "aduana_kmh", "aduana_fila_m", "aduana_veic", "br277_kmh", "br277_fila_m", "br277_veic"],
-                               pontos=[curto(r) for r in hist[::3]]), open(a.saida + ".hist", "w"))
-                publicar(a.saida + ".hist", a.publicar.replace("atual.json", "historico.json"), anon)
+                               pontos=[curto(r) for r in hist[::3]], em=res["em"], quadros={k: getattr(tr, "ult", None) for k, tr in trechos.items()}), open(a.saida + ".hist", "w"))
+                if a.publicar: publicar(a.saida + ".hist", a.publicar.replace("atual.json", "historico.json"), anon)
             print(json.dumps({"t": res["t"], **{x["trecho"]: [x["estado"], x["veiculos"], x["parado_pct"], x["kmh"], x["fila_m"]] for x in res["trechos"]}, "ms": res["ms_por_quadro"], "pub": pub}, ensure_ascii=False), flush=True)
         if not ao_vivo and all((k + "_fim") in fila and k not in fila for k in trechos): break
         if not fez: time.sleep(0.02)
