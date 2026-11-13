@@ -20,13 +20,13 @@ PAR = 0.2   # segundos entre os dois quadros do par (5 quadros/s)
 #  zona: polígono das faixas de CARRO sentido Paraguai (caminhão em fila própria fica fora)
 #  metros: tabela y -> metros até o fim do trecho (None = câmera ainda sem escala medida)
 CAMERAS = {
-    "ponte": dict(stream="fozpontedaamizadesentidoparaguai", nome="Ponte (ponta paraguaia)",
+    "ponte": dict(stream="fozpontedaamizadesentidoparaguai", nome="Ponte (ponta paraguaia)", capacidade=50,
         recortes=[(450, 100, 1090, 740), (700, 440, 1340, 1080), (1000, 440, 1640, 1080)],
         eixo=(-0.58, -0.81),
         zona=[(700, 250), (790, 250), (1010, 600), (1420, 1080), (930, 1080), (880, 760), (760, 480)],
         # escala provisória (±30%): perfil de tempo de travessia de 12/11 ancorado nos 132 m mirante -> cabeceira
         metros=[(202, 0), (255, 10), (330, 34), (450, 64), (600, 92), (742, 113), (900, 125), (1050, 134)]),
-    "aduana": dict(stream="fozaduanapontedaamizade", nome="Curva da aduana",
+    "aduana": dict(stream="fozaduanapontedaamizade", nome="Curva da aduana", capacidade=45,
         recortes=[(560, 0, 1200, 640), (200, 280, 840, 920), (700, 280, 1340, 920)],
         eixo=(-0.80, 0.60), ignora=(7,),
         zona=[(1075, 20), (1215, 20), (1150, 300), (900, 560), (420, 900), (60, 900), (640, 470), (1000, 250)],
@@ -236,7 +236,7 @@ class Trecho:
         s.cont.append((agora, na_zona)); s.cont = s.cont[-200:]
     def resumo(s, agora, janela):
         A = [a for a in s.amostras if a["t"] >= agora - janela]; s.amostras = [a for a in s.amostras if a["t"] >= agora - 120]
-        out = dict(trecho=s.chave, nome=s.cfg["nome"], trecho_m=(max(m for _, m in s.cfg["metros"]) if s.cfg["metros"] else None), estado="indisponivel", motivo=None, veiculos=None, parados=None, parado_pct=None, kmh=None, fila_m=None, tempo_trecho_s=None, confianca=0)
+        out = dict(trecho=s.chave, nome=s.cfg["nome"], capacidade=s.cfg.get("capacidade"), trecho_m=(max(m for _, m in s.cfg["metros"]) if s.cfg["metros"] else None), estado="indisponivel", motivo=None, veiculos=None, parados=None, parado_pct=None, kmh=None, fila_m=None, tempo_trecho_s=None, confianca=0)
         if agora - s.ultimo > 15 or s.quadros < 3: out["motivo"] = "camera sem imagem"; return out
         br, nt = np.mean(s.brilho[-8:]), np.mean(s.nitidez[-8:])
         if br < 35: out["motivo"] = "escuro demais"; return out
@@ -268,13 +268,27 @@ class Trecho:
 # ---- Travessia inteira (viaduto -> ponta paraguaia): junta os 3 trechos vistos e estima os 2 trechos cegos pelos vizinhos.
 # Comprimentos medidos no mapa/satélite (m). VAO_A = curva sem câmera; VAO_B = aduana + parte da ponte sem câmera fixa.
 VAO_A, VAO_B, V_LIVRE = 685, 730, 11.0     # V_LIVRE = 40 km/h quando o trecho está livre
-def travessia(tr):
+_MEM = dict(votos={}, estado={}, hist=[])
+def _estavel(chave, bruto, n=18, liga=0.6, desliga=0.3):
+    """Sim/não com memória de 3 min: só liga com 60% dos últimos votos e só desliga abaixo de 30% (não fica piscando)."""
+    v = _MEM["votos"].setdefault(chave, []); v.append(bool(bruto)); del v[:-n]
+    frac = sum(v) / len(v); atual = _MEM["estado"].get(chave, bool(bruto))
+    atual = (frac >= desliga) if atual else (frac >= liga); _MEM["estado"][chave] = atual; return atual
+def travessia(tr, estavel=True):
     t = {x["trecho"]: x for x in tr}
     out = dict(estado="indisponivel", motivo=None, fila_min_m=None, fila_max_m=None, tempo_min_s=None, tempo_max_s=None, cauda=None)
     if any(k not in t or t[k]["estado"] == "indisponivel" for k in ("ponte", "aduana", "br277")):
         out["motivo"] = "trecho sem leitura: " + ", ".join(k for k in ("ponte", "aduana", "br277") if k not in t or t[k]["estado"] == "indisponivel"); return out
-    fila = lambda k: t[k]["estado"] in ("lento", "parado")
-    cheio = lambda k: fila(k) and (t[k]["cauda_alem"] if "cauda_alem" in t[k] else (t[k]["fila_m"] or 0) >= 0.7 * t[k]["trecho_m"])   # cauda passa do que a câmera vê
+    def _cheio_bruto(k):
+        x = t[k]
+        if x["estado"] not in ("lento", "parado"): return False
+        if "cauda_alem" in x and x["cauda_alem"] is not None: return bool(x["cauda_alem"])
+        # câmera de detector: cheia se a fila ocupa 60% do trecho OU se está parada com a imagem lotada de veículos
+        return (x["fila_m"] or 0) >= 0.6 * x["trecho_m"] or (x["estado"] == "parado" and x.get("capacidade") and (x["veiculos"] or 0) >= 0.6 * x["capacidade"])
+    F = {k: (_estavel("fila_" + k, t[k]["estado"] in ("lento", "parado")) if estavel else t[k]["estado"] in ("lento", "parado")) for k in ("ponte", "aduana", "br277")}
+    CH = {k: F[k] and (_estavel("cheio_" + k, _cheio_bruto(k)) if estavel else _cheio_bruto(k)) for k in ("ponte", "aduana", "br277")}
+    fila = lambda k: F[k]
+    cheio = lambda k: CH[k]
     vel = lambda k: max((t[k]["kmh"] or 0) / 3.6, 0.3) if fila(k) else max((t[k]["kmh"] or 0) / 3.6, V_LIVRE)
     def t_trecho(k):      # só o pedaço em fila anda devagar; o resto do trecho anda livre
         if not fila(k): return t[k]["trecho_m"] / vel(k)
@@ -324,6 +338,13 @@ def travessia(tr):
     out.update(estado="estimado" if fmax > fmin or aberta else "medido", fila_min_m=round(fmin), fila_max_m=None if aberta else round(fmax),
                tempo_min_s=round(tmin), tempo_max_s=None if aberta else round(tmax), cauda=cauda,
                fila_local_viaduto=bool(fila("br277") and not cheio("aduana")), percurso_m=VAO_A + VAO_B + sum(t[k]["trecho_m"] for k in ("ponte", "aduana", "br277")))
+    if estavel:
+        H = _MEM["hist"]; H.append(dict(out)); del H[:-18]
+        iguais = [h for h in H if h.get("cauda") == out.get("cauda") and h.get("tempo_min_s") is not None]
+        if len(iguais) >= 3:
+            med = lambda c: (None if out.get(c) is None else round(float(np.median([h[c] for h in iguais if h.get(c) is not None]))))
+            for c in ("fila_min_m", "fila_max_m", "tempo_min_s", "tempo_max_s", "precisao_pct"): out[c] = med(c)
+        out["estavel_em"] = len(iguais)
     return out
 
 def leitor(chave, fonte, fila, fim, ao_vivo):
@@ -378,7 +399,7 @@ def main():
         if prox is None: prox = relogio + a.passo
         if relogio >= prox:
             prox += a.passo
-            res = dict(versao="0.9", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
+            res = dict(versao="0.10", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
                        trechos=[tr.resumo(relogio, a.janela) for tr in trechos.values()], ms_por_quadro=round(1000 * float(np.mean(gasto[-30:])) if gasto else 0))
             res["travessia"] = travessia(res["trechos"])
             json.dump(res, open(a.saida + ".tmp", "w"), ensure_ascii=False); os.replace(a.saida + ".tmp", a.saida); hist.append(res); hist[:] = hist[-360:]
