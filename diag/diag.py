@@ -40,4 +40,7 @@ for k, cfg in W.CAMERAS.items():
         cv2.imwrite("%s/%s_%d_det.jpg" % (saida, k, i), d, [cv2.IMWRITE_JPEG_QUALITY, 88]); cv2.imwrite("%s/%s_%d_lupa.jpg" % (saida, k, i), d2, [cv2.IMWRITE_JPEG_QUALITY, 88])
 for k, st in EXTRA.items():
     for i, img in enumerate(pega(st, 6, 12)): cv2.imwrite("%s/%s_%d_bruto.jpg" % (saida, k, i), img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+for k, cfg in list(W.CAMERAS.items()):
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-rw_timeout", "15000000", "-i", W.BASE % cfg["stream"], "-an", "-t", "20", "-vf", "fps=5,scale=1920:1080",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-g", "5", "%s/%s_20s.mp4" % (saida, k)], timeout=120)
 res["em"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()); json.dump(res, open(saida + "/contagem.json", "w"), indent=1); print(json.dumps(res))
