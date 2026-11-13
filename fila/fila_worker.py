@@ -383,6 +383,13 @@ def main():
             res["travessia"] = travessia(res["trechos"])
             json.dump(res, open(a.saida + ".tmp", "w"), ensure_ascii=False); os.replace(a.saida + ".tmp", a.saida); hist.append(res); hist[:] = hist[-360:]
             if a.publicar: pub = publicar(a.saida, a.publicar, anon)
+            if a.publicar and len(hist) % 6 == 0:      # a cada minuto: histórico resumido da última hora (para a página de monitor)
+                def curto(r):
+                    t = {x["trecho"]: x for x in r["trechos"]}; v = r.get("travessia") or {}
+                    return [r["em"], v.get("tempo_min_s"), v.get("tempo_max_s"), v.get("fila_min_m"), v.get("precisao_pct")] + [t.get(k, {}).get(c) for k in ("ponte", "aduana", "br277") for c in ("kmh", "fila_m", "veiculos")]
+                json.dump(dict(campos=["em", "tempo_min_s", "tempo_max_s", "fila_min_m", "precisao_pct", "ponte_kmh", "ponte_fila_m", "ponte_veic", "aduana_kmh", "aduana_fila_m", "aduana_veic", "br277_kmh", "br277_fila_m", "br277_veic"],
+                               pontos=[curto(r) for r in hist[::3]]), open(a.saida + ".hist", "w"))
+                publicar(a.saida + ".hist", a.publicar.replace("atual.json", "historico.json"), anon)
             print(json.dumps({"t": res["t"], **{x["trecho"]: [x["estado"], x["veiculos"], x["parado_pct"], x["kmh"], x["fila_m"]] for x in res["trechos"]}, "ms": res["ms_por_quadro"], "pub": pub}, ensure_ascii=False), flush=True)
         if not ao_vivo and all((k + "_fim") in fila and k not in fila for k in trechos): break
         if not fez: time.sleep(0.02)
