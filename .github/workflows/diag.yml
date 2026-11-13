@@ -1,0 +1,26 @@
+name: diag
+# Diagnóstico da fila da ponte: quadros de agora das câmeras, com zona e caixas do detector, guardados como artefato (3 dias).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["diag/**", ".github/workflows/diag.yml"]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: ferramentas
+        run: |
+          curl -sSL --retry 3 -o /tmp/ff.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          mkdir -p /tmp/ff && tar -xJf /tmp/ff.tar.xz -C /tmp/ff --strip-components=1 && echo "/tmp/ff/bin" >> "$GITHUB_PATH"
+          pip install -q opencv-python-headless==4.10.0.84 numpy
+          curl -sSL --retry 3 -o /tmp/yolox_s.onnx https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx
+          echo "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063  /tmp/yolox_s.onnx" | sha256sum -c -
+      - name: quadros e detecção
+        run: python3 diag/diag.py /tmp/yolox_s.onnx /tmp/diag
+      - uses: actions/upload-artifact@v4
+        with: { name: diag, path: /tmp/diag, retention-days: 3 }
