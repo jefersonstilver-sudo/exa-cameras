@@ -196,6 +196,15 @@ def travessia(tr):
         else: tmin += VAO_A / V_LIVRE; tmax += VAO_A / V_LIVRE
     else:
         tmin += (VAO_A + VAO_B) / V_LIVRE; tmax += (VAO_A + VAO_B) / V_LIVRE
+    # Nível de precisão (0-100): confiança de cada câmera pesada pelos metros que ela vê; trecho cego vale 60% do pior vizinho
+    # quando a regra é direta, 30 quando a cauda está dentro dele; fila além das câmeras limita em 40. É confiança do próprio
+    # sistema — ainda NÃO é acerto medido contra travessias cronometradas.
+    conf = lambda k: float(t[k].get("confianca") or 0)
+    def conf_vao(baixo, cima): return 30.0 if (cheio(baixo) and not fila(cima)) else 0.6 * min(conf(baixo), conf(cima))
+    pesos = [(t[k]["trecho_m"], conf(k)) for k in ("ponte", "aduana", "br277")] + [(VAO_B, conf_vao("ponte", "aduana")), (VAO_A, conf_vao("aduana", "br277"))]
+    prec = sum(m * c for m, c in pesos) / sum(m for m, _ in pesos)
+    if aberta: prec = min(prec, 40.0)
+    out["precisao_pct"] = round(prec)
     out.update(estado="estimado" if fmax > fmin or aberta else "medido", fila_min_m=round(fmin), fila_max_m=None if aberta else round(fmax),
                tempo_min_s=round(tmin), tempo_max_s=None if aberta else round(tmax), cauda=cauda,
                fila_local_viaduto=bool(fila("br277") and not cheio("aduana")), percurso_m=VAO_A + VAO_B + sum(t[k]["trecho_m"] for k in ("ponte", "aduana", "br277")))
@@ -253,7 +262,7 @@ def main():
         if prox is None: prox = relogio + a.passo
         if relogio >= prox:
             prox += a.passo
-            res = dict(versao="0.5", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
+            res = dict(versao="0.6", em=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), t=round(relogio - (t_ini if ao_vivo else 0), 1), sentido="Brasil -> Paraguai",
                        trechos=[tr.resumo(relogio, a.janela) for tr in trechos.values()], ms_por_quadro=round(1000 * float(np.mean(gasto[-30:])) if gasto else 0))
             res["travessia"] = travessia(res["trechos"])
             json.dump(res, open(a.saida + ".tmp", "w"), ensure_ascii=False); os.replace(a.saida + ".tmp", a.saida); hist.append(res); hist[:] = hist[-360:]

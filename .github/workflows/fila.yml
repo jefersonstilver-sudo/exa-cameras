@@ -2,11 +2,14 @@ name: fila
 # EXA Mídia — fila da Ponte da Amizade (Brasil -> Paraguai) em tempo real, pelas câmeras públicas do Portal da Cidade.
 # Detecta e acompanha cada veículo (YOLOX-s, Apache 2.0) e publica um resumo por trecho a cada 10 s em
 # camera-clipes/fila/atual.json (bucket público da EXA). Sem segredo: o envio leva um token OIDC do GitHub,
-# conferido pela função camera-clipes-subir. Em TESTE: só roda por push em fila/** ou disparo manual.
+# conferido pela função camera-clipes-subir. Roda de dia (06h07-19h06 de Brasília), 59 min por vez, uma execução por hora;
+# à noite fica desligado até a leitura noturna ser testada (sem leitura a tela mostra só o clima).
 on:
+  schedule:
+    - cron: "7 9-21 * * *"
   workflow_dispatch:
     inputs:
-      minutos: { description: "quanto tempo fica rodando (máx. 345)", required: false, default: "30" }
+      minutos: { description: "quanto tempo fica rodando (máx. 345)", required: false, default: "59" }
   push:
     branches: [main]
     paths: ["fila/**", ".github/workflows/fila.yml"]
@@ -22,7 +25,7 @@ jobs:
     timeout-minutes: 350
     env:
       ANON: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFha2Vub2xqc3ljeXJjcmNoZ3hqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY5MDM3NTUsImV4cCI6MjA2MjQ3OTc1NX0.wEKVfJKfQiybyne0yn0dOUwbujb_WXkZHAzlyfHb0lk
-      MINUTOS: ${{ inputs.minutos || '30' }}
+      MINUTOS: ${{ inputs.minutos || '59' }}
     steps:
       - uses: actions/checkout@v4
       - name: ffmpeg
