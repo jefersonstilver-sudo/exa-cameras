@@ -1,0 +1,108 @@
+{
+ "ponte": [
+  {
+   "detectados": 74,
+   "na_zona": 61,
+   "por_classe": {
+    "onibus": 2,
+    "carro": 63,
+    "caminhao": 2,
+    "moto": 7
+   },
+   "lupa_detectados": 95,
+   "lupa_na_zona_sem_moto": 81
+  },
+  {
+   "detectados": 74,
+   "na_zona": 61,
+   "por_classe": {
+    "onibus": 1,
+    "carro": 66,
+    "moto": 7
+   },
+   "lupa_detectados": 107,
+   "lupa_na_zona_sem_moto": 92
+  },
+  {
+   "detectados": 64,
+   "na_zona": 53,
+   "por_classe": {
+    "onibus": 2,
+    "carro": 57,
+    "moto": 4,
+    "caminhao": 1
+   },
+   "lupa_detectados": 102,
+   "lupa_na_zona_sem_moto": 80
+  }
+ ],
+ "aduana": [
+  {
+   "detectados": 55,
+   "na_zona": 35,
+   "por_classe": {
+    "carro": 47,
+    "caminhao": 7,
+    "onibus": 1
+   },
+   "lupa_detectados": 82,
+   "lupa_na_zona_sem_moto": 54
+  },
+  {
+   "detectados": 55,
+   "na_zona": 33,
+   "por_classe": {
+    "carro": 44,
+    "caminhao": 8,
+    "moto": 2,
+    "onibus": 1
+   },
+   "lupa_detectados": 82,
+   "lupa_na_zona_sem_moto": 52
+  },
+  {
+   "detectados": 59,
+   "na_zona": 39,
+   "por_classe": {
+    "carro": 50,
+    "caminhao": 6,
+    "moto": 3
+   },
+   "lupa_detectados": 87,
+   "lupa_na_zona_sem_moto": 54
+  }
+ ],
+ "br277": [
+  {
+   "detectados": 17,
+   "na_zona": 6,
+   "por_classe": {
+    "carro": 13,
+    "caminhao": 4
+   },
+   "lupa_detectados": 25,
+   "lupa_na_zona_sem_moto": 11
+  },
+  {
+   "detectados": 17,
+   "na_zona": 6,
+   "por_classe": {
+    "carro": 13,
+    "caminhao": 4
+   },
+   "lupa_detectados": 25,
+   "lupa_na_zona_sem_moto": 11
+  },
+  {
+   "detectados": 17,
+   "na_zona": 6,
+   "por_classe": {
+    "carro": 13,
+    "caminhao": 4
+   },
+   "lupa_detectados": 25,
+   "lupa_na_zona_sem_moto": 11
+  }
+ ],
+ "em": "2026-11-13T18:16:48Z"
+}
