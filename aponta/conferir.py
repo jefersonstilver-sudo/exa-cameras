@@ -5,7 +5,7 @@ Compara um quadro atual da câmera com a imagem de referência dela (aponta/ref/
 (ORB + RANSAC, transformação afim parcial — o mesmo método do alinhamento da fila). Câmera no lugar: muitos pontos
 casam e a transformação é pequena (deslize de alguns pixels). Câmera virada para outro lugar: quase nada casa.
 
-Uso: conferir.py <camera> <quadro.jpg>   → imprime um JSON {"aponta": "ok"|"fora"|"noite"|"sem_ref"|"erro", ...}
+Uso: conferir.py <camera> <quadro.jpg> [quadro_anterior.jpg]   → imprime um JSON {"aponta": "ok"|"fora"|"noite"|"sem_ref"|"erro", ...}
 Só julga de dia (07h00–18h30 de Brasília): à noite a imagem muda demais e daria falso "fora".
 """
 import json, os, sys, time
@@ -36,7 +36,12 @@ def main():
     if not (7 * 60 <= br.hour * 60 + br.minute <= 18 * 60 + 30): sai(aponta="noite")
     ref = REFS.get(cam)
     caminho = os.path.normpath(os.path.join(PASTA, ref)) if ref else None
-    if not caminho or not os.path.exists(caminho): sai(aponta="sem_ref")
+    if not caminho or not os.path.exists(caminho):
+        # sem referência: ao menos avisa quando o enquadramento muda entre duas conferências (câmera girou)
+        ant = sys.argv[3] if len(sys.argv) > 3 and os.path.exists(sys.argv[3]) else None
+        if not ant: sai(aponta="sem_ref")
+        caminho = ant; SEM_REF = True
+    else: SEM_REF = False
     try:
         import cv2, numpy as np
         a = cv2.imread(quadro, cv2.IMREAD_GRAYSCALE); r = cv2.imread(caminho, cv2.IMREAD_GRAYSCALE)
@@ -59,6 +64,7 @@ def main():
         if M is None: sai(aponta="fora", motivo="nada casa com a referência", pontos=n)
         esc = float(np.hypot(M[0, 0], M[1, 0])); dx, dy = float(M[0, 2]), float(M[1, 2])
         ok = n >= MIN_PONTOS and abs(esc - 1) <= MAX_ESCALA and abs(dx) <= lim and abs(dy) <= lim
+        if SEM_REF: sai(aponta="sem_ref" if ok else "mudou", pontos=n, **({} if ok else {"motivo": "o enquadramento mudou desde a conferência anterior"}))
         sai(aponta="ok" if ok else "fora", pontos=n, escala=round(esc, 3), dx=round(dx), dy=round(dy),
             **({} if ok else {"motivo": "pouca coisa casa com a referência" if n < MIN_PONTOS else "enquadramento mudou (zoom ou giro)"}))
     except SystemExit: raise

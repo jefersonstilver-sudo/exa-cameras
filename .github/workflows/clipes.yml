@@ -66,7 +66,7 @@ jobs:
               if [ $(( agora - ult )) -ge 540 ]; then
                 echo "$agora" > /tmp/c/$c.apt
                 ffmpeg -loglevel error -y -ss 3 -i "$f" -frames:v 1 -q:v 3 /tmp/c/$c-q.jpg 2>/dev/null \
-                  && python3 repo/aponta/conferir.py "$c" /tmp/c/$c-q.jpg > /tmp/c/$c.aponta 2>/dev/null || true
+                  && python3 repo/aponta/conferir.py "$c" /tmp/c/$c-q.jpg /tmp/c/$c-ant.jpg > /tmp/c/$c.aponta 2>/dev/null; cp -f /tmp/c/$c-q.jpg /tmp/c/$c-ant.jpg 2>/dev/null || true
               fi
               ap=$(cat /tmp/c/$c.aponta 2>/dev/null | head -1); [ -n "$ap" ] || ap=null
               printf '{"arquivo":"%s/%s.mp4","em":"%s","seg":%s,"aponta":%s}' "$c" "$t" "$(date -u +%FT%TZ)" "$dur" "$ap" > /tmp/c/$c.json
