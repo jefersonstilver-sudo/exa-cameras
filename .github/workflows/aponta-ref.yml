@@ -1,0 +1,34 @@
+name: aponta-ref
+# EXA Mídia — grava a imagem de referência ("é assim que esta câmera deve aparecer") de uma ou mais câmeras.
+# Rodar só quando a câmera estiver CERTA na tela (conferir antes no monitor). A referência fica em aponta/ref/<camera>.jpg
+# e é usada pelo clipes.yml para avisar quando o Portal virar a câmera para outro lugar.
+on:
+  workflow_dispatch:
+    inputs:
+      cameras: { description: "nomes das câmeras separados por espaço (ex.: fozpontetancredoneves)", required: true }
+permissions:
+  contents: write
+jobs:
+  ref:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: ffmpeg
+        run: |
+          curl -sSL --retry 3 -o /tmp/ff.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          mkdir -p /tmp/ff && tar -xJf /tmp/ff.tar.xz -C /tmp/ff --strip-components=1
+          echo "/tmp/ff/bin" >> "$GITHUB_PATH"
+      - name: gravar referências
+        env:
+          CAMERAS: ${{ inputs.cameras }}
+        run: |
+          set -e
+          for c in $CAMERAS; do
+            echo "$c" | grep -Eq '^[a-z0-9]+$' || { echo "nome inválido: $c"; exit 1; }
+            timeout 60 ffmpeg -loglevel error -y -rw_timeout 15000000 -i "https://video02.logicahost.com.br/portaldacidade/$c.stream/playlist.m3u8" \
+              -vf "scale=1920:1080" -frames:v 1 -q:v 3 "aponta/ref/$c.jpg"
+            ls -l "aponta/ref/$c.jpg"
+          done
+          git config user.name "exa-cameras"; git config user.email "exa-cameras@users.noreply.github.com"
+          git add aponta/ref && git commit -m "aponta: referência de $CAMERAS" && git push

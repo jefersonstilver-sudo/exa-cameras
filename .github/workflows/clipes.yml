@@ -30,6 +30,10 @@ jobs:
           mkdir -p /tmp/ff && tar -xJf /tmp/ff.tar.xz -C /tmp/ff --strip-components=1
           echo "/tmp/ff/bin" >> "$GITHUB_PATH"
           /tmp/ff/bin/ffmpeg -version | head -1
+      - name: conferidor de apontamento
+        run: pip install -q opencv-python-headless==4.10.0.84 numpy || true
+      - uses: actions/checkout@v4
+        with: { path: repo }
       - name: gerar clipes
         run: |
           set +e
@@ -57,7 +61,15 @@ jobs:
             if [ -z "$dur" ] || [ "$dur" -lt 10 ]; then echo "$c: falhou"; rm -f "$f"; return; fi
             h=$(sobe "$f" "$c/$t.mp4" video/mp4 "max-age=86400")
             if [ "$h" = "200" ]; then
-              printf '{"arquivo":"%s/%s.mp4","em":"%s","seg":%s}' "$c" "$t" "$(date -u +%FT%TZ)" "$dur" > /tmp/c/$c.json
+              # 17/11/2026: a cada ~10 min confere se a câmera está apontada para o lugar de sempre (aponta/conferir.py)
+              agora=$(date +%s); ult=$(cat /tmp/c/$c.apt 2>/dev/null || echo 0)
+              if [ $(( agora - ult )) -ge 540 ]; then
+                echo "$agora" > /tmp/c/$c.apt
+                ffmpeg -loglevel error -y -ss 3 -i "$f" -frames:v 1 -q:v 3 /tmp/c/$c-q.jpg 2>/dev/null \
+                  && python3 repo/aponta/conferir.py "$c" /tmp/c/$c-q.jpg > /tmp/c/$c.aponta 2>/dev/null || true
+              fi
+              ap=$(cat /tmp/c/$c.aponta 2>/dev/null | head -1); [ -n "$ap" ] || ap=null
+              printf '{"arquivo":"%s/%s.mp4","em":"%s","seg":%s,"aponta":%s}' "$c" "$t" "$(date -u +%FT%TZ)" "$dur" "$ap" > /tmp/c/$c.json
               sobe /tmp/c/$c.json "$c/atual.json" application/json "no-cache" >/dev/null
               echo "$c $t ${dur}s $(du -k "$f" | cut -f1)KB"
               # apaga clipes antigos desta câmera (fica com os 4 últimos)
