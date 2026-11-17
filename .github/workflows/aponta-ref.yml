@@ -24,6 +24,7 @@ jobs:
           CAMERAS: ${{ inputs.cameras }}
         run: |
           set -e
+          mkdir -p aponta/ref
           for c in $CAMERAS; do
             echo "$c" | grep -Eq '^[a-z0-9]+$' || { echo "nome inválido: $c"; exit 1; }
             timeout 60 ffmpeg -loglevel error -y -rw_timeout 15000000 -i "https://video02.logicahost.com.br/portaldacidade/$c.stream/playlist.m3u8" \
